@@ -1,13 +1,15 @@
 {
   "FormatVersion": "1.0",
   "SchemaVersion": "1.0.0",
+  "SolutionId": "5e3eee17-63b6-4e2b-816a-a374cd183fe6",
   "Name": "HospitalReportRPA",
   "Description": "Hospital Diagnostic Report Automation - Studio Web CrossPlatform Edition",
   "Version": "2.0.0",
   "Projects": [
     {
+      "Id": "217e7687-2ea3-4bc4-bdc9-5edd93119723",
       "Name": "HospitalReportRPA_Web",
-      "Path": ".",
+      "ProjectRelativePath": ".",
       "Type": "Process",
       "Version": "2.0.0"
     }
