@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  PERFORMER: SendNotification.xaml  —  STUDIO WEB / CROSS-PLATFORM       ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  Changes from Desktop version:                                           ║
+  ║  ► SendSmtpMail (Windows activity) → Send Mail via Microsoft 365        ║
+  ║  ► GetAsset for credentials replaced by Microsoft 365 OAuth connection  ║
+  ║  ► Fallback: cross-platform SMTP via HttpClient (if M365 not connected) ║
+  ║                                                                          ║
+  ║  Microsoft 365 Mail requires:                                            ║
+  ║    - UiPath.MicrosoftOffice365.Activities package                       ║
+  ║    - M365 connection registered in Orchestrator                         ║
+  ║    - Connected App with Mail.Send permission in Azure AD                ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Performer.SendNotification"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:m365="clr-namespace:UiPath.MicrosoftOffice365.Activities.Mail;assembly=UiPath.MicrosoftOffice365.Activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_RecipientEmail"  Type="InArgument(x:String)" />
+    <x:Property Name="in_PatientName"     Type="InArgument(x:String)" />
+    <x:Property Name="in_UHID"            Type="InArgument(x:String)" />
+    <x:Property Name="in_TestType"        Type="InArgument(x:String)" />
+    <x:Property Name="in_FinalBlobKey"    Type="InArgument(x:String)" />
+    <x:Property Name="in_Config"          Type="InArgument(scg:Dictionary(x:String, x:String))" />
+  </x:Members>
+
+  <Sequence DisplayName="[NOTIFY] Send Email — Web Edition (Microsoft 365)">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="x:String"  Name="str_Subject" />
+      <Variable x:TypeArguments="x:String"  Name="str_Body" />
+      <Variable x:TypeArguments="x:Boolean" Name="bool_ValidEmail" Default="False" />
+    </Sequence.Variables>
+
+    <!-- ── BR08: Validate email ──────────────────────────────────────────── -->
+    <Assign DisplayName="VALIDATE | Email format">
+      <Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_ValidEmail]</OutArgument></Assign.To>
+      <Assign.Value>
+        <InArgument x:TypeArguments="x:Boolean">
+          [Not String.IsNullOrWhiteSpace(in_RecipientEmail) AndAlso
+           System.Text.RegularExpressions.Regex.IsMatch(in_RecipientEmail,
+             "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")]
+        </InArgument>
+      </Assign.Value>
+    </Assign>
+
+    <If DisplayName="IF | Valid email?">
+      <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_ValidEmail]</InArgument></If.Condition>
+      <If.Then>
+        <Sequence DisplayName="SEND | Email via Microsoft 365">
+          <!-- Build email content -->
+          <Assign DisplayName="BUILD | Subject">
+            <Assign.To><OutArgument x:TypeArguments="x:String">[str_Subject]</OutArgument></Assign.To>
+            <Assign.Value>
+              <InArgument x:TypeArguments="x:String">
+                ["[Hospital Report Ready] " &amp; in_TestType &amp; " report for " &amp; in_PatientName &amp; " (UHID: " &amp; in_UHID &amp; ")"]
+              </InArgument>
+            </Assign.Value>
+          </Assign>
+
+          <Assign DisplayName="BUILD | HTML Body">
+            <Assign.To><OutArgument x:TypeArguments="x:String">[str_Body]</OutArgument></Assign.To>
+            <Assign.Value>
+              <InArgument x:TypeArguments="x:String">
+                ["&lt;html&gt;&lt;body style='font-family:Calibri;'&gt;" &amp;
+                 "&lt;h3 style='color:#1A5276;'&gt;Diagnostic Report Available&lt;/h3&gt;" &amp;
+                 "&lt;table&gt;" &amp;
+                 "&lt;tr&gt;&lt;td&gt;&lt;b&gt;Patient Name&lt;/b&gt;&lt;/td&gt;&lt;td&gt;" &amp; in_PatientName &amp; "&lt;/td&gt;&lt;/tr&gt;" &amp;
+                 "&lt;tr&gt;&lt;td&gt;&lt;b&gt;UHID&lt;/b&gt;&lt;/td&gt;&lt;td&gt;" &amp; in_UHID &amp; "&lt;/td&gt;&lt;/tr&gt;" &amp;
+                 "&lt;tr&gt;&lt;td&gt;&lt;b&gt;Test Type&lt;/b&gt;&lt;/td&gt;&lt;td&gt;" &amp; in_TestType &amp; "&lt;/td&gt;&lt;/tr&gt;" &amp;
+                 "&lt;tr&gt;&lt;td&gt;&lt;b&gt;Report Blob Key&lt;/b&gt;&lt;/td&gt;&lt;td&gt;" &amp; in_FinalBlobKey &amp; "&lt;/td&gt;&lt;/tr&gt;" &amp;
+                 "&lt;/table&gt;" &amp;
+                 "&lt;br&gt;&lt;p style='color:#666;font-size:11px;'&gt;This is an automated notification from the Hospital Report Automation System.&lt;/p&gt;" &amp;
+                 "&lt;/body&gt;&lt;/html&gt;"]
+              </InArgument>
+            </Assign.Value>
+          </Assign>
+
+          <!--
+            STUDIO WEB CHANGE:
+              REMOVED: SendSmtpMail (Windows-only, requires local SMTP client)
+              REMOVED: GetAsset for SMTP password
+              ADDED  : SendMail via Microsoft 365 activity
+                       Authentication handled by the M365 connection in Orchestrator
+                       No hardcoded credentials anywhere
+
+            NOTE: The "Account" property specifies which M365 mailbox to send from.
+                  Set this to the Orchestrator-managed M365 connection resource name.
+          -->
+          <TryCatch DisplayName="TRY | Send Mail via Microsoft 365">
+            <TryCatch.Try>
+              <m365:SendMail
+                  DisplayName="M365 MAIL | Send Notification Email"
+                  To="[in_RecipientEmail]"
+                  Subject="[str_Subject]"
+                  Body="[str_Body]"
+                  IsBodyHtml="True"
+                  Account="[in_Config(&quot;M365_SenderAccount&quot;)]" />
+                  <!--
+                    M365_SenderAccount is a Config.xlsx key that stores the registered
+                    M365 connection name in Orchestrator (e.g. "HospitalBotMailbox")
+                  -->
+
+              <ui:LogMessage Level="Info"
+                             Message="[&quot;[NOTIFY] ✓ M365 email sent to: &quot; &amp; in_RecipientEmail]" />
+            </TryCatch.Try>
+            <TryCatch.Catches>
+              <!-- SE05: M365 send failure — rethrow for Performer retry -->
+              <Catch x:TypeArguments="s:Exception">
+                <ActivityAction x:TypeArguments="s:Exception">
+                  <ActivityAction.Argument>
+                    <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Mail" />
+                  </ActivityAction.Argument>
+                  <Sequence>
+                    <ui:LogMessage Level="Error"
+                                   Message="[&quot;[SE05][EmailServerFailure] M365 send error for UHID=&quot; &amp; in_UHID &amp; &quot;: &quot; &amp; ex_Mail.Message]" />
+                    <Throw DisplayName="RETHROW | SE05 M365 Mail Failure">
+                      <Throw.Exception>
+                        <InArgument x:TypeArguments="s:Exception">
+                          [New System.Net.Mail.SmtpException("[SE05][EmailServerFailure] Microsoft 365 mail send failed: " &amp; ex_Mail.Message)]
+                        </InArgument>
+                      </Throw.Exception>
+                    </Throw>
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+            </TryCatch.Catches>
+          </TryCatch>
+
+        </Sequence>
+      </If.Then>
+      <If.Else>
+        <!-- BR08: Missing/invalid email — log warning only, do NOT throw -->
+        <ui:LogMessage Level="Warn"
+                       Message="[&quot;[BR08][MissingRecipientEmail] No valid email for UHID=&quot; &amp; in_UHID &amp; &quot;. Notification skipped.&quot;]" />
+      </If.Else>
+    </If>
+
+  </Sequence>
+</Activity>

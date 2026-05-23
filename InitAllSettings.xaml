@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  FRAMEWORK: InitAllSettings.xaml  —  STUDIO WEB / CROSS-PLATFORM        ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  Changes from Desktop version:                                           ║
+  ║  ► Config.xlsx lives in an Orchestrator Storage Bucket (not local disk)  ║
+  ║  ► DownloadStorageBucketFile → local temp dir → cross-platform Excel     ║
+  ║  ► ExcelApplicationScope replaced with UseExcelFile (cross-platform)     ║
+  ║  ► No System.IO.Directory.CreateDirectory (cloud storage, no local dirs) ║
+  ║  ► TempFolder is the only local path (OS temp, always writable)          ║
+  ║                                                                          ║
+  ║  IN Args : in_BucketName    – Orchestrator Storage Bucket name           ║
+  ║            in_ConfigBlobKey – path/key of Config.xlsx inside the bucket  ║
+  ║  OUT Args: out_Config       – Dictionary<String, String>                 ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Framework.InitAllSettings"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:sd="clr-namespace:System.Data;assembly=System.Data"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:excel="clr-namespace:UiPath.Excel.Activities.API;assembly=UiPath.Excel.Activities"
+  xmlns:storage="clr-namespace:UiPath.Orchestrator.Activities;assembly=UiPath.Orchestrator.Activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_BucketName"    Type="InArgument(x:String)" />
+    <x:Property Name="in_ConfigBlobKey" Type="InArgument(x:String)" />
+    <x:Property Name="out_Config"       Type="OutArgument(scg:Dictionary(x:String, x:String))" />
+  </x:Members>
+
+  <Sequence DisplayName="[FRAMEWORK] Init All Settings — Web Edition">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="x:String" Name="str_TempConfigPath"
+                Default="[System.IO.Path.Combine(System.IO.Path.GetTempPath(), &quot;Config_&quot; &amp; System.Guid.NewGuid().ToString() &amp; &quot;.xlsx&quot;)]" />
+      <Variable x:TypeArguments="sd:DataTable"                        Name="dt_Config" />
+      <Variable x:TypeArguments="scg:Dictionary(x:String, x:String)"  Name="dict_Config" />
+      <Variable x:TypeArguments="scg:List(x:String)"                  Name="lst_RequiredKeys">
+        <Variable.Default>
+          <InArgument x:TypeArguments="scg:List(x:String)">
+            [New List(Of String) From {
+              "QueueName","BucketName","InputExcelBlobKey","OutputExcelBlobKey",
+              "InputPDFFolder","OutputPDFFolder","LogBlobFolder",
+              "MaxRetries","SMTP_Host","SMTP_Port","SMTP_From",
+              "AllowedTestTypes","UHID_MinLength","UHID_MaxLength","SheetName"
+            }]
+          </InArgument>
+        </Variable.Default>
+      </Variable>
+      <Variable x:TypeArguments="x:String" Name="str_MissingKeys" Default="&quot;&quot;" />
+    </Sequence.Variables>
+
+    <!-- ── STEP 1: Download Config.xlsx from Storage Bucket to OS temp ──── -->
+    <!--
+      STUDIO WEB CHANGE: Config.xlsx is NOT on local disk.
+      It lives in Orchestrator Storage Bucket under in_ConfigBlobKey.
+      We download it to the OS temp folder (always writable cross-platform).
+    -->
+    <TryCatch DisplayName="TRY | Download Config.xlsx from Storage Bucket">
+      <TryCatch.Try>
+        <storage:DownloadStorageBucketFile
+            DisplayName="BUCKET | Download Config.xlsx"
+            BucketName="[in_BucketName]"
+            FileName="[in_ConfigBlobKey]"
+            FilePath="[str_TempConfigPath]" />
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Dl" />
+            </ActivityAction.Argument>
+            <Throw DisplayName="THROW | SE08 Config Download Failed">
+              <Throw.Exception>
+                <InArgument x:TypeArguments="s:Exception">
+                  [New System.IO.FileNotFoundException("[SE08][ConfigFileNotFound] Failed to download Config.xlsx from bucket '" &amp; in_BucketName &amp; "' key '" &amp; in_ConfigBlobKey &amp; "': " &amp; ex_Dl.Message)]
+                </InArgument>
+              </Throw.Exception>
+            </Throw>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- ── STEP 2: Read Config.xlsx with cross-platform Excel activities ── -->
+    <!--
+      STUDIO WEB CHANGE: ExcelApplicationScope → UseExcelFile
+      UseExcelFile is the cross-platform Excel activity.
+      Reads the Settings sheet into a DataTable.
+    -->
+    <excel:UseExcelFile
+        DisplayName="EXCEL | Open Config.xlsx (Cross-Platform)"
+        FilePath="[str_TempConfigPath]"
+        ReadOnly="True"
+        AutoSave="False">
+      <excel:UseExcelFile.Body>
+        <ActivityAction x:TypeArguments="excel:ExcelWorkbookScope">
+          <ActivityAction.Argument>
+            <DelegateInArgument x:TypeArguments="excel:ExcelWorkbookScope" Name="wb" />
+          </ActivityAction.Argument>
+          <!--
+            STUDIO WEB CHANGE: ReadRange → ReadTable (cross-platform activity)
+            ReadTable reads an Excel table or sheet range into a DataTable.
+          -->
+          <excel:ReadTable
+              DisplayName="READ | Settings Sheet"
+              SheetName="Settings"
+              DataTable="[dt_Config]"
+              HasHeaders="True" />
+        </ActivityAction>
+      </excel:UseExcelFile.Body>
+    </excel:UseExcelFile>
+
+    <!-- ── STEP 3: Build Dictionary from Name/Value rows ────────────────── -->
+    <Assign DisplayName="INIT | Empty Config Dictionary">
+      <Assign.To><OutArgument x:TypeArguments="scg:Dictionary(x:String, x:String)">[dict_Config]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="scg:Dictionary(x:String, x:String)">[New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)]</InArgument></Assign.Value>
+    </Assign>
+
+    <ForEach x:TypeArguments="sd:DataRow" DisplayName="FOR EACH | Config Row → Dictionary">
+      <ForEach.Values>
+        <InArgument x:TypeArguments="scg:IEnumerable(sd:DataRow)">[dt_Config.AsEnumerable()]</InArgument>
+      </ForEach.Values>
+      <ActivityAction x:TypeArguments="sd:DataRow">
+        <ActivityAction.Argument>
+          <DelegateInArgument x:TypeArguments="sd:DataRow" Name="cfgRow" />
+        </ActivityAction.Argument>
+        <If DisplayName="IF | Row has Name and Value?">
+          <If.Condition>
+            <InArgument x:TypeArguments="x:Boolean">
+              [Not String.IsNullOrWhiteSpace(cfgRow("Name").ToString) AndAlso Not String.IsNullOrWhiteSpace(cfgRow("Value").ToString)]
+            </InArgument>
+          </If.Condition>
+          <If.Then>
+            <InvokeMethod MethodName="Add" TargetObject="[dict_Config]">
+              <InvokeMethod.Parameters>
+                <InArgument x:TypeArguments="x:String">[cfgRow("Name").ToString.Trim]</InArgument>
+                <InArgument x:TypeArguments="x:String">[cfgRow("Value").ToString.Trim]</InArgument>
+              </InvokeMethod.Parameters>
+            </InvokeMethod>
+          </If.Then>
+        </If>
+      </ActivityAction>
+    </ForEach>
+
+    <!-- ── STEP 4: Validate required keys ───────────────────────────────── -->
+    <ForEach x:TypeArguments="x:String" DisplayName="FOR EACH | Validate Required Key">
+      <ForEach.Values>
+        <InArgument x:TypeArguments="scg:IEnumerable(x:String)">[lst_RequiredKeys]</InArgument>
+      </ForEach.Values>
+      <ActivityAction x:TypeArguments="x:String">
+        <ActivityAction.Argument>
+          <DelegateInArgument x:TypeArguments="x:String" Name="requiredKey" />
+        </ActivityAction.Argument>
+        <If DisplayName="IF | Key missing?">
+          <If.Condition>
+            <InArgument x:TypeArguments="x:Boolean">[Not dict_Config.ContainsKey(requiredKey)]</InArgument>
+          </If.Condition>
+          <If.Then>
+            <Assign>
+              <Assign.To><OutArgument x:TypeArguments="x:String">[str_MissingKeys]</OutArgument></Assign.To>
+              <Assign.Value><InArgument x:TypeArguments="x:String">[str_MissingKeys &amp; requiredKey &amp; "; "]</InArgument></Assign.Value>
+            </Assign>
+          </If.Then>
+        </If>
+      </ActivityAction>
+    </ForEach>
+
+    <If DisplayName="IF | Any missing keys? → SE08">
+      <If.Condition>
+        <InArgument x:TypeArguments="x:Boolean">[Not String.IsNullOrEmpty(str_MissingKeys)]</InArgument>
+      </If.Condition>
+      <If.Then>
+        <Throw DisplayName="THROW | SE08 Missing Config Keys">
+          <Throw.Exception>
+            <InArgument x:TypeArguments="s:Exception">
+              [New KeyNotFoundException("[SE08][ConfigFileNotFound] Required config keys missing: " &amp; str_MissingKeys)]
+            </InArgument>
+          </Throw.Exception>
+        </Throw>
+      </If.Then>
+    </If>
+
+    <!-- ── STEP 5: Cleanup temp file ────────────────────────────────────── -->
+    <!--
+      STUDIO WEB: Always clean up temp files after use.
+      Temp folder is shared across runs on the cloud robot.
+    -->
+    <TryCatch DisplayName="TRY | Delete Temp Config File">
+      <TryCatch.Try>
+        <InvokeMethod MethodName="Delete" ClassName="System.IO.File">
+          <InvokeMethod.Parameters>
+            <InArgument x:TypeArguments="x:String">[str_TempConfigPath]</InArgument>
+          </InvokeMethod.Parameters>
+        </InvokeMethod>
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Del" />
+            </ActivityAction.Argument>
+            <!-- Non-fatal: temp file cleanup failure -->
+            <ui:LogMessage Level="Trace" Message="[&quot;[FRAMEWORK] Temp cleanup warning: &quot; &amp; ex_Del.Message]" />
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- Return dictionary -->
+    <Assign DisplayName="RETURN | Config Dictionary">
+      <Assign.To><OutArgument x:TypeArguments="scg:Dictionary(x:String, x:String)">[out_Config]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="scg:Dictionary(x:String, x:String)">[dict_Config]</InArgument></Assign.Value>
+    </Assign>
+
+    <ui:LogMessage Level="Info"
+                   Message="[&quot;[FRAMEWORK] Config loaded from bucket. Total keys: &quot; &amp; dict_Config.Count.ToString]" />
+
+  </Sequence>
+</Activity>

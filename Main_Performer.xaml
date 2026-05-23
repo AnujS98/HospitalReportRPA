@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Performer.Main_Performer"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <StateMachine DisplayName="[PERFORMER] ReFramework — Web Edition">
+    <StateMachine.Variables>
+      <Variable x:TypeArguments="scg:Dictionary(x:String, x:String)"  Name="in_Config" />
+      <Variable x:TypeArguments="ui:QueueItem"    Name="io_TransactionItem" />
+      <Variable x:TypeArguments="x:Int32"  Name="io_TransactionNumber" Default="0" />
+      <Variable x:TypeArguments="x:Int32"  Name="io_RetryNumber"       Default="0" />
+      <Variable x:TypeArguments="s:Exception" Name="io_BusinessException" />
+      <Variable x:TypeArguments="s:Exception" Name="io_SystemException" />
+      <Variable x:TypeArguments="x:Boolean"   Name="bool_InitSuccess"  Default="False" />
+    </StateMachine.Variables>
+
+    <!-- ══ STATE 1: INIT ══════════════════════════════════════════════════ -->
+    <StateMachine.InitialState>
+      <State DisplayName="INIT">
+        <State.Entry>
+          <Sequence DisplayName="[INIT] Load Config from Bucket">
+            <TryCatch DisplayName="TRY | InitAllSettings">
+              <TryCatch.Try>
+                <ui:InvokeWorkflowFile
+                    WorkflowFileName="[&quot;Framework\InitAllSettings.xaml&quot;]"
+                    DisplayName="INIT | Load Config">
+                  <ui:InvokeWorkflowFile.Arguments>
+                    <InArgument  x:TypeArguments="x:String"
+                                 x:Key="in_BucketName">["HospitalReportsBucket"]</InArgument>
+                    <InArgument  x:TypeArguments="x:String"
+                                 x:Key="in_ConfigBlobKey">["input/Config.xlsx"]</InArgument>
+                    <OutArgument x:TypeArguments="scg:Dictionary(x:String, x:String)"
+                                 x:Key="out_Config">[in_Config]</OutArgument>
+                  </ui:InvokeWorkflowFile.Arguments>
+                </ui:InvokeWorkflowFile>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[io_RetryNumber]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[0]</InArgument></Assign.Value></Assign>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_InitSuccess]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[True]</InArgument></Assign.Value></Assign>
+                <ui:LogMessage Level="Info" Message="[&quot;[INIT] Performer initialized. Bucket: &quot; &amp; in_Config(&quot;BucketName&quot;)]" />
+              </TryCatch.Try>
+              <TryCatch.Catches>
+                <Catch x:TypeArguments="s:Exception">
+                  <ActivityAction x:TypeArguments="s:Exception">
+                    <ActivityAction.Argument><DelegateInArgument x:TypeArguments="s:Exception" Name="ex_I" /></ActivityAction.Argument>
+                    <Sequence>
+                      <Assign><Assign.To><OutArgument x:TypeArguments="s:Exception">[io_SystemException]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="s:Exception">[ex_I]</InArgument></Assign.Value></Assign>
+                      <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_InitSuccess]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                      <ui:LogMessage Level="Fatal" Message="[&quot;[SE08][InitFailed] &quot; &amp; ex_I.Message]" />
+                    </Sequence>
+                  </ActivityAction>
+                </Catch>
+              </TryCatch.Catches>
+            </TryCatch>
+          </Sequence>
+        </State.Entry>
+        <State.Transitions>
+          <Transition DisplayName="Init OK → Get Tx" To="GET_TRANSACTION_DATA">
+            <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[bool_InitSuccess]</InArgument></Transition.Condition>
+          </Transition>
+          <Transition DisplayName="Init FAILED → End" To="END_PROCESS">
+            <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[Not bool_InitSuccess]</InArgument></Transition.Condition>
+          </Transition>
+        </State.Transitions>
+      </State>
+    </StateMachine.InitialState>
+
+    <!-- ══ STATE 2: GET TRANSACTION DATA ══════════════════════════════════ -->
+    <State DisplayName="GET_TRANSACTION_DATA">
+      <State.Entry>
+        <Sequence DisplayName="[GET TX] Get Next Queue Item">
+          <Assign><Assign.To><OutArgument x:TypeArguments="s:Exception">[io_BusinessException]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="s:Exception">[Nothing]</InArgument></Assign.Value></Assign>
+          <Assign><Assign.To><OutArgument x:TypeArguments="s:Exception">[io_SystemException]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="s:Exception">[Nothing]</InArgument></Assign.Value></Assign>
+          <TryCatch DisplayName="TRY | GetTransactionItem">
+            <TryCatch.Try>
+              <ui:GetTransactionItem
+                  DisplayName="QUEUE | Get Next Item"
+                  QueueName="[in_Config(&quot;QueueName&quot;)]"
+                  TransactionItem="[io_TransactionItem]" />
+              <If DisplayName="IF | Item found?">
+                <If.Condition><InArgument x:TypeArguments="x:Boolean">[io_TransactionItem IsNot Nothing]</InArgument></If.Condition>
+                <If.Then>
+                  <Sequence>
+                    <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[io_TransactionNumber]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[io_TransactionNumber + 1]</InArgument></Assign.Value></Assign>
+                    <ui:LogMessage Level="Info" Message="[&quot;[GET TX] Tx #&quot; &amp; io_TransactionNumber.ToString &amp; &quot; → UHID: &quot; &amp; io_TransactionItem.SpecificContent(&quot;UHID&quot;).ToString]" />
+                  </Sequence>
+                </If.Then>
+                <If.Else>
+                  <ui:LogMessage Level="Info" Message="[&quot;[GET TX] Queue empty. Ending.&quot;]" />
+                </If.Else>
+              </If>
+            </TryCatch.Try>
+            <TryCatch.Catches>
+              <Catch x:TypeArguments="s:Exception">
+                <ActivityAction x:TypeArguments="s:Exception">
+                  <ActivityAction.Argument><DelegateInArgument x:TypeArguments="s:Exception" Name="ex_G" /></ActivityAction.Argument>
+                  <Sequence>
+                    <Assign><Assign.To><OutArgument x:TypeArguments="s:Exception">[io_SystemException]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="s:Exception">[ex_G]</InArgument></Assign.Value></Assign>
+                    <ui:LogMessage Level="Error" Message="[&quot;[SE02] GetTransactionItem error: &quot; &amp; ex_G.Message]" />
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+            </TryCatch.Catches>
+          </TryCatch>
+        </Sequence>
+      </State.Entry>
+      <State.Transitions>
+        <Transition DisplayName="Item found → Process" To="PROCESS_TRANSACTION">
+          <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[io_TransactionItem IsNot Nothing AndAlso io_SystemException Is Nothing]</InArgument></Transition.Condition>
+        </Transition>
+        <Transition DisplayName="Queue empty → End" To="END_PROCESS">
+          <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[io_TransactionItem Is Nothing AndAlso io_SystemException Is Nothing]</InArgument></Transition.Condition>
+        </Transition>
+        <Transition DisplayName="Queue error → Re-Init" To="INIT">
+          <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[io_SystemException IsNot Nothing]</InArgument></Transition.Condition>
+        </Transition>
+      </State.Transitions>
+    </State>
+
+    <!-- ══ STATE 3: PROCESS TRANSACTION ══════════════════════════════════ -->
+    <State DisplayName="PROCESS_TRANSACTION">
+      <State.Entry>
+        <Sequence DisplayName="[PROCESS TX] Execute Core Logic">
+          <TryCatch DisplayName="TRY | Process.xaml">
+            <TryCatch.Try>
+              <ui:InvokeWorkflowFile
+                  WorkflowFileName="[&quot;Performer\Process.xaml&quot;]"
+                  DisplayName="INVOKE | Process.xaml">
+                <ui:InvokeWorkflowFile.Arguments>
+                  <InArgument x:TypeArguments="ui:QueueItem"
+                              x:Key="in_TransactionItem">[io_TransactionItem]</InArgument>
+                  <InArgument x:TypeArguments="scg:Dictionary(x:String, x:String)"
+                              x:Key="in_Config">[in_Config]</InArgument>
+                </ui:InvokeWorkflowFile.Arguments>
+              </ui:InvokeWorkflowFile>
+
+              <!-- SUCCESS -->
+              <ui:SetTransactionStatus
+                  DisplayName="QUEUE | Status → Successful"
+                  Status="Successful"
+                  TransactionItem="[io_TransactionItem]" />
+              <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[io_RetryNumber]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[0]</InArgument></Assign.Value></Assign>
+              <ui:LogMessage Level="Info" Message="[&quot;[PROCESS TX] SUCCESS Tx #&quot; &amp; io_TransactionNumber.ToString]" />
+
+            </TryCatch.Try>
+            <TryCatch.Catches>
+
+              <!-- BizRuleException: no retry -->
+              <Catch x:TypeArguments="ui:BusinessRuleException">
+                <ActivityAction x:TypeArguments="ui:BusinessRuleException">
+                  <ActivityAction.Argument>
+                    <DelegateInArgument x:TypeArguments="ui:BusinessRuleException" Name="ex_Biz" />
+                  </ActivityAction.Argument>
+                  <Sequence>
+                    <Assign><Assign.To><OutArgument x:TypeArguments="s:Exception">[io_BusinessException]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="s:Exception">[ex_Biz]</InArgument></Assign.Value></Assign>
+                    <ui:SetTransactionStatus
+                        DisplayName="QUEUE | Status → Failed (BizEx)"
+                        Status="Failed" TransactionItem="[io_TransactionItem]"
+                        ErrorType="BusinessException" ErrorMessage="[ex_Biz.Message]" />
+                    <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[io_RetryNumber]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[0]</InArgument></Assign.Value></Assign>
+                    <ui:LogMessage Level="Warn" Message="[&quot;[BizRuleException] Tx #&quot; &amp; io_TransactionNumber.ToString &amp; &quot;: &quot; &amp; ex_Biz.Message]" />
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+
+              <!-- SystemException: retry with backoff -->
+              <Catch x:TypeArguments="s:Exception">
+                <ActivityAction x:TypeArguments="s:Exception">
+                  <ActivityAction.Argument>
+                    <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Sys" />
+                  </ActivityAction.Argument>
+                  <Sequence>
+                    <Assign><Assign.To><OutArgument x:TypeArguments="s:Exception">[io_SystemException]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="s:Exception">[ex_Sys]</InArgument></Assign.Value></Assign>
+                    <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[io_RetryNumber]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[io_RetryNumber + 1]</InArgument></Assign.Value></Assign>
+                    <!--
+                      STUDIO WEB CHANGE:
+                        REMOVED: TakeScreenshot + SaveImage (no UI to capture)
+                        ADDED  : LogMessage at Error level — Orchestrator captures this
+                    -->
+                    <ui:LogMessage Level="Error"
+                                   Message="[&quot;[SystemException] Tx #&quot; &amp; io_TransactionNumber.ToString &amp; &quot; Retry #&quot; &amp; io_RetryNumber.ToString &amp; &quot;: &quot; &amp; ex_Sys.GetType().Name &amp; &quot; — &quot; &amp; ex_Sys.Message]" />
+                    <If DisplayName="IF | MaxRetries exhausted?">
+                      <If.Condition>
+                        <InArgument x:TypeArguments="x:Boolean">[io_RetryNumber >= Convert.ToInt32(in_Config("MaxRetries"))]</InArgument>
+                      </If.Condition>
+                      <If.Then>
+                        <Sequence>
+                          <ui:SetTransactionStatus
+                              DisplayName="QUEUE | Status → Failed (SysEx MaxRetries)"
+                              Status="Failed" TransactionItem="[io_TransactionItem]"
+                              ErrorType="ApplicationException"
+                              ErrorMessage="[&quot;MaxRetries exhausted. &quot; &amp; ex_Sys.Message]" />
+                          <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[io_RetryNumber]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[0]</InArgument></Assign.Value></Assign>
+                          <ui:LogMessage Level="Error" Message="[&quot;[SystemException] MaxRetries reached for Tx #&quot; &amp; io_TransactionNumber.ToString &amp; &quot;. Marked FAILED.&quot;]" />
+                        </Sequence>
+                      </If.Then>
+                    </If>
+                  </Sequence>
+                </ActivityAction>
+              </Catch>
+
+            </TryCatch.Catches>
+          </TryCatch>
+        </Sequence>
+      </State.Entry>
+      <State.Transitions>
+        <Transition DisplayName="Done → Get Next" To="GET_TRANSACTION_DATA">
+          <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[io_SystemException Is Nothing OrElse io_RetryNumber = 0]</InArgument></Transition.Condition>
+        </Transition>
+        <Transition DisplayName="SysEx (retrying) → Re-Init" To="INIT">
+          <Transition.Condition><InArgument x:TypeArguments="x:Boolean">[io_SystemException IsNot Nothing AndAlso io_RetryNumber > 0]</InArgument></Transition.Condition>
+        </Transition>
+      </State.Transitions>
+    </State>
+
+    <!-- ══ STATE 4: END PROCESS ═══════════════════════════════════════════ -->
+    <State DisplayName="END_PROCESS" IsFinal="True">
+      <State.Entry>
+        <Sequence DisplayName="[END] Finalize">
+          <!--
+            STUDIO WEB CHANGE:
+              REMOVED: CloseAllApplications (no local apps to close)
+              REMOVED: KillProcess (no local Excel.exe)
+              UseExcelFile auto-closes when its scope exits.
+          -->
+          <ui:LogMessage Level="Info"
+                         Message="[&quot;[PERFORMER] === END PROCESS | Total Transactions: &quot; &amp; io_TransactionNumber.ToString &amp; &quot; ===&quot;]" />
+          <If DisplayName="IF | Fatal error?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[io_SystemException IsNot Nothing]</InArgument></If.Condition>
+            <If.Then>
+              <ui:LogMessage Level="Fatal" Message="[&quot;[PERFORMER] ABORTED: &quot; &amp; io_SystemException.Message]" />
+            </If.Then>
+          </If>
+        </Sequence>
+      </State.Entry>
+    </State>
+
+  </StateMachine>
+</Activity>

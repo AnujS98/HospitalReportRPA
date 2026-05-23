@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  DISPATCHER: ReadExcelData.xaml  —  STUDIO WEB / CROSS-PLATFORM          ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  Changes from Desktop version:                                           ║
+  ║  ► PatientReports.xlsx lives in Storage Bucket (not local path)          ║
+  ║  ► DownloadStorageBucketFile → temp path → UseExcelFile (cross-platform) ║
+  ║  ► ExcelApplicationScope + ReadRange → UseExcelFile + ReadTable          ║
+  ║  ► Temp file always cleaned up after read                                ║
+  ║                                                                          ║
+  ║  IN Args : in_BucketName    – Storage Bucket name                        ║
+  ║            in_ExcelBlobKey  – bucket key of PatientReports.xlsx          ║
+  ║            in_SheetName     – sheet to read                              ║
+  ║  OUT Args: out_dtPatients   – DataTable with all rows                    ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Dispatcher.ReadExcelData"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:sd="clr-namespace:System.Data;assembly=System.Data"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:excel="clr-namespace:UiPath.Excel.Activities.API;assembly=UiPath.Excel.Activities"
+  xmlns:storage="clr-namespace:UiPath.Orchestrator.Activities;assembly=UiPath.Orchestrator.Activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_BucketName"   Type="InArgument(x:String)" />
+    <x:Property Name="in_ExcelBlobKey" Type="InArgument(x:String)" />
+    <x:Property Name="in_SheetName"    Type="InArgument(x:String)" />
+    <x:Property Name="out_dtPatients"  Type="OutArgument(sd:DataTable)" />
+  </x:Members>
+
+  <Sequence DisplayName="[READ] Excel from Storage Bucket — Web Edition">
+    <Sequence.Variables>
+      <!--
+        STUDIO WEB: Use OS temp folder — always writable across platforms.
+        GUID suffix prevents name collisions when multiple robots run in parallel.
+      -->
+      <Variable x:TypeArguments="x:String" Name="str_TempPath"
+                Default="[System.IO.Path.Combine(System.IO.Path.GetTempPath(), &quot;PatientReports_&quot; &amp; System.Guid.NewGuid().ToString(&quot;N&quot;) &amp; &quot;.xlsx&quot;)]" />
+      <Variable x:TypeArguments="sd:DataTable" Name="dt_Raw" />
+    </Sequence.Variables>
+
+    <!-- ── STEP 1: Download Input Excel from Storage Bucket ──────────────── -->
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: System.IO.File.Exists(in_FilePath) check (no local path)
+        ADDED  : DownloadStorageBucketFile — throws SE01 if blob not found
+    -->
+    <TryCatch DisplayName="TRY | Download PatientReports.xlsx from Bucket">
+      <TryCatch.Try>
+        <storage:DownloadStorageBucketFile
+            DisplayName="BUCKET | Download Input Excel"
+            BucketName="[in_BucketName]"
+            FileName="[in_ExcelBlobKey]"
+            FilePath="[str_TempPath]" />
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Dl" />
+            </ActivityAction.Argument>
+            <Throw DisplayName="THROW | SE01 Excel Download Failed">
+              <Throw.Exception>
+                <InArgument x:TypeArguments="s:Exception">
+                  [New System.IO.IOException("[SE01][ExcelReadFailure] Cannot download input Excel from bucket. Key='" &amp; in_ExcelBlobKey &amp; "': " &amp; ex_Dl.Message)]
+                </InArgument>
+              </Throw.Exception>
+            </Throw>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- ── STEP 2: Read with cross-platform Excel activities ─────────────── -->
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: ExcelApplicationScope + ReadRange (Windows-only)
+        ADDED  : UseExcelFile + ReadTable (cross-platform)
+    -->
+    <excel:UseExcelFile
+        DisplayName="EXCEL | Open PatientReports.xlsx (Cross-Platform)"
+        FilePath="[str_TempPath]"
+        ReadOnly="True"
+        AutoSave="False">
+      <excel:UseExcelFile.Body>
+        <ActivityAction x:TypeArguments="excel:ExcelWorkbookScope">
+          <ActivityAction.Argument>
+            <DelegateInArgument x:TypeArguments="excel:ExcelWorkbookScope" Name="wb" />
+          </ActivityAction.Argument>
+          <excel:ReadTable
+              DisplayName="READ | PatientData Sheet"
+              SheetName="[in_SheetName]"
+              DataTable="[dt_Raw]"
+              HasHeaders="True" />
+        </ActivityAction>
+      </excel:UseExcelFile.Body>
+    </excel:UseExcelFile>
+
+    <!-- ── STEP 3: Validate DataTable is not empty ───────────────────────── -->
+    <If DisplayName="IF | DataTable has rows?">
+      <If.Condition>
+        <InArgument x:TypeArguments="x:Boolean">[dt_Raw IsNot Nothing AndAlso dt_Raw.Rows.Count > 0]</InArgument>
+      </If.Condition>
+      <If.Then>
+        <Assign DisplayName="RETURN | DataTable">
+          <Assign.To><OutArgument x:TypeArguments="sd:DataTable">[out_dtPatients]</OutArgument></Assign.To>
+          <Assign.Value><InArgument x:TypeArguments="sd:DataTable">[dt_Raw]</InArgument></Assign.Value>
+        </Assign>
+      </If.Then>
+      <If.Else>
+        <Throw DisplayName="THROW | SE01 Empty Excel">
+          <Throw.Exception>
+            <InArgument x:TypeArguments="s:Exception">
+              [New InvalidOperationException("[SE01][ExcelReadFailure] Input Excel has no data rows in sheet: " &amp; in_SheetName)]
+            </InArgument>
+          </Throw.Exception>
+        </Throw>
+      </If.Else>
+    </If>
+
+    <!-- ── STEP 4: Cleanup temp file ────────────────────────────────────── -->
+    <TryCatch DisplayName="TRY | Cleanup Temp Excel File">
+      <TryCatch.Try>
+        <InvokeMethod MethodName="Delete" ClassName="System.IO.File">
+          <InvokeMethod.Parameters>
+            <InArgument x:TypeArguments="x:String">[str_TempPath]</InArgument>
+          </InvokeMethod.Parameters>
+        </InvokeMethod>
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Del" />
+            </ActivityAction.Argument>
+            <ui:LogMessage Level="Trace" Message="[&quot;[READ] Temp file cleanup warning: &quot; &amp; ex_Del.Message]" />
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <ui:LogMessage Level="Info"
+                   Message="[&quot;[READ] Excel downloaded and read from bucket. Rows: &quot; &amp; dt_Raw.Rows.Count.ToString]" />
+
+  </Sequence>
+</Activity>

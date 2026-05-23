@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Dispatcher.Main_Dispatcher"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:sd="clr-namespace:System.Data;assembly=System.Data"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <Sequence DisplayName="[DISPATCHER] Hospital Report Automation — Web Edition">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="scg:Dictionary(x:String, x:String)" Name="in_Config" />
+      <Variable x:TypeArguments="sd:DataTable"                        Name="dt_Patients" />
+      <Variable x:TypeArguments="x:Int32"  Name="int_SuccessCount" Default="0" />
+      <Variable x:TypeArguments="x:Int32"  Name="int_FailedCount"  Default="0" />
+      <Variable x:TypeArguments="x:String" Name="str_RunDate"
+                Default="[DateTime.Now.ToString(&quot;yyyyMMdd_HHmmss&quot;)]" />
+      <!-- Bucket name is loaded from InitAllSettings; passed to sub-workflows -->
+      <Variable x:TypeArguments="x:String" Name="str_BucketName" />
+    </Sequence.Variables>
+
+    <ui:LogMessage Level="Info" Message="[&quot;[DISPATCHER] === START : &quot; &amp; str_RunDate &amp; &quot; ===&quot;]" />
+
+    <!-- STEP 1: Load Config from Storage Bucket -->
+    <TryCatch DisplayName="TRY | Init All Settings">
+      <TryCatch.Try>
+        <ui:InvokeWorkflowFile
+            WorkflowFileName="[&quot;Framework\InitAllSettings.xaml&quot;]"
+            DisplayName="INIT | Load Config from Bucket">
+          <ui:InvokeWorkflowFile.Arguments>
+            <InArgument  x:TypeArguments="x:String"
+                         x:Key="in_BucketName">["HospitalReportsBucket"]</InArgument>
+            <InArgument  x:TypeArguments="x:String"
+                         x:Key="in_ConfigBlobKey">["input/Config.xlsx"]</InArgument>
+            <OutArgument x:TypeArguments="scg:Dictionary(x:String, x:String)"
+                         x:Key="out_Config">[in_Config]</OutArgument>
+          </ui:InvokeWorkflowFile.Arguments>
+        </ui:InvokeWorkflowFile>
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Init" />
+            </ActivityAction.Argument>
+            <Sequence>
+              <ui:LogMessage Level="Fatal" Message="[&quot;[SE08] Config init failed: &quot; &amp; ex_Init.Message]" />
+              <Rethrow />
+            </Sequence>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- Cache bucket name from config -->
+    <Assign DisplayName="CACHE | BucketName">
+      <Assign.To><OutArgument x:TypeArguments="x:String">[str_BucketName]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="x:String">[in_Config("BucketName")]</InArgument></Assign.Value>
+    </Assign>
+
+    <ui:LogMessage Level="Info" Message="[&quot;[DISPATCHER] Config loaded. Bucket: &quot; &amp; str_BucketName]" />
+
+    <!-- STEP 2: Read Input Excel from Storage Bucket -->
+    <TryCatch DisplayName="TRY | Read Input Excel from Bucket">
+      <TryCatch.Try>
+        <ui:InvokeWorkflowFile
+            WorkflowFileName="[&quot;Dispatcher\ReadExcelData.xaml&quot;]"
+            DisplayName="READ | PatientReports.xlsx from Bucket">
+          <ui:InvokeWorkflowFile.Arguments>
+            <InArgument  x:TypeArguments="x:String"
+                         x:Key="in_BucketName">[str_BucketName]</InArgument>
+            <InArgument  x:TypeArguments="x:String"
+                         x:Key="in_ExcelBlobKey">[in_Config("InputExcelBlobKey")]</InArgument>
+            <InArgument  x:TypeArguments="x:String"
+                         x:Key="in_SheetName">[in_Config("SheetName")]</InArgument>
+            <OutArgument x:TypeArguments="sd:DataTable"
+                         x:Key="out_dtPatients">[dt_Patients]</OutArgument>
+          </ui:InvokeWorkflowFile.Arguments>
+        </ui:InvokeWorkflowFile>
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Read" />
+            </ActivityAction.Argument>
+            <Sequence>
+              <ui:LogMessage Level="Fatal" Message="[&quot;[SE01] Excel read failed: &quot; &amp; ex_Read.Message]" />
+              <Rethrow />
+            </Sequence>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <ui:LogMessage Level="Info" Message="[&quot;[DISPATCHER] Rows read: &quot; &amp; dt_Patients.Rows.Count.ToString]" />
+
+    <!-- STEP 3: Validate and Add to Queue -->
+    <ui:InvokeWorkflowFile
+        WorkflowFileName="[&quot;Dispatcher\ValidateAndAddQueue.xaml&quot;]"
+        DisplayName="VALIDATE &amp; QUEUE | All Rows">
+      <ui:InvokeWorkflowFile.Arguments>
+        <InArgument  x:TypeArguments="sd:DataTable"
+                     x:Key="in_dtPatients">[dt_Patients]</InArgument>
+        <InArgument  x:TypeArguments="scg:Dictionary(x:String, x:String)"
+                     x:Key="in_Config">[in_Config]</InArgument>
+        <OutArgument x:TypeArguments="x:Int32"
+                     x:Key="out_SuccessCount">[int_SuccessCount]</OutArgument>
+        <OutArgument x:TypeArguments="x:Int32"
+                     x:Key="out_FailedCount">[int_FailedCount]</OutArgument>
+      </ui:InvokeWorkflowFile.Arguments>
+    </ui:InvokeWorkflowFile>
+
+    <ui:LogMessage Level="Info"
+                   Message="[&quot;[DISPATCHER] === COMPLETE | Queued: &quot; &amp; int_SuccessCount.ToString &amp; &quot; | Rejected: &quot; &amp; int_FailedCount.ToString &amp; &quot; ===&quot;]" />
+
+  </Sequence>
+</Activity>

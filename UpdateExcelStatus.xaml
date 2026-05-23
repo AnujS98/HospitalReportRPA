@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  PERFORMER: UpdateExcelStatus.xaml  —  STUDIO WEB / CROSS-PLATFORM      ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  Changes from Desktop version:                                           ║
+  ║  ► Output Excel lives in Storage Bucket — not on local disk              ║
+  ║  ► Pattern: Download → Modify with cross-platform Excel → Re-upload      ║
+  ║  ► ExcelApplicationScope + WriteCell → UseExcelFile + WriteCell (CP)     ║
+  ║  ► Mutex-style locking: if parallel Performers write simultaneously,     ║
+  ║    they must use retry or Orchestrator queue to serialize Excel updates  ║
+  ║                                                                          ║
+  ║  IMPORTANT — CONCURRENCY NOTE:                                           ║
+  ║  If multiple Performers run in parallel, they may all try to download    ║
+  ║  and upload the same Output Excel at the same time → last-write-wins     ║
+  ║  data loss. Mitigation: use a dedicated "ExcelUpdateQueue" in             ║
+  ║  Orchestrator so only one Performer updates Excel at a time.             ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Performer.UpdateExcelStatus"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:excel="clr-namespace:UiPath.Excel.Activities.API;assembly=UiPath.Excel.Activities"
+  xmlns:storage="clr-namespace:UiPath.Orchestrator.Activities;assembly=UiPath.Orchestrator.Activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_BucketName"         Type="InArgument(x:String)" />
+    <x:Property Name="in_OutputExcelBlobKey" Type="InArgument(x:String)" />
+    <x:Property Name="in_RowIndex"           Type="InArgument(x:String)" />
+    <x:Property Name="in_Status"             Type="InArgument(x:String)" />
+    <x:Property Name="in_RenamedBlobKey"     Type="InArgument(x:String)" />
+    <x:Property Name="in_ErrorType"          Type="InArgument(x:String)" />
+    <x:Property Name="in_ErrorMessage"       Type="InArgument(x:String)" />
+    <x:Property Name="in_Timestamp"          Type="InArgument(x:String)" />
+    <x:Property Name="in_SheetName"          Type="InArgument(x:String)" />
+  </x:Members>
+
+  <Sequence DisplayName="[UPDATE EXCEL] Status — Web Edition (Bucket)">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="x:String" Name="str_TempExcelPath"
+                Default="[System.IO.Path.Combine(System.IO.Path.GetTempPath(), &quot;OutputExcel_&quot; &amp; System.Guid.NewGuid().ToString(&quot;N&quot;) &amp; &quot;.xlsx&quot;)]" />
+      <Variable x:TypeArguments="x:String" Name="str_ExcelRow"
+                Default="[(Convert.ToInt32(in_RowIndex) + 1).ToString]" />
+    </Sequence.Variables>
+
+    <TryCatch DisplayName="TRY | Download → Update → Re-upload Output Excel">
+      <TryCatch.Try>
+        <Sequence>
+          <!-- ── 1. Download current Output Excel from bucket ──────────── -->
+          <!--
+            STUDIO WEB CHANGE:
+              REMOVED: ExcelApplicationScope that opens a local file
+              ADDED  : Download from bucket first, then open with UseExcelFile
+          -->
+          <storage:DownloadStorageBucketFile
+              DisplayName="BUCKET | Download Output Excel"
+              BucketName="[in_BucketName]"
+              FileName="[in_OutputExcelBlobKey]"
+              FilePath="[str_TempExcelPath]" />
+
+          <!-- ── 2. Open and write status cells ─────────────────────────── -->
+          <!--
+            STUDIO WEB CHANGE:
+              REMOVED: ExcelApplicationScope + WriteCell (Windows)
+              ADDED  : UseExcelFile + WriteCell (cross-platform)
+                       AutoSave="True" writes changes before close
+          -->
+          <excel:UseExcelFile
+              DisplayName="EXCEL | Open Output Excel (Cross-Platform)"
+              FilePath="[str_TempExcelPath]"
+              ReadOnly="False"
+              AutoSave="True">
+            <excel:UseExcelFile.Body>
+              <ActivityAction x:TypeArguments="excel:ExcelWorkbookScope">
+                <ActivityAction.Argument>
+                  <DelegateInArgument x:TypeArguments="excel:ExcelWorkbookScope" Name="wb" />
+                </ActivityAction.Argument>
+                <Sequence DisplayName="WRITE | Status Cells for Row">
+                  <!--
+                    Column layout (same as desktop version):
+                    A=PatientName, B=UHID, C=TestType, D=ReportFilePath/BlobKey, E=RecipientEmail,
+                    F=RenamedBlobKey, G=Status, H=ErrorType, I=ErrorMessage, J=ProcessedTimestamp
+                  -->
+                  <excel:WriteCell
+                      DisplayName="WRITE | F = RenamedBlobKey"
+                      SheetName="[in_SheetName]"
+                      Cell="[&quot;F&quot; &amp; str_ExcelRow]"
+                      Value="[in_RenamedBlobKey]" />
+                  <excel:WriteCell
+                      DisplayName="WRITE | G = Status"
+                      SheetName="[in_SheetName]"
+                      Cell="[&quot;G&quot; &amp; str_ExcelRow]"
+                      Value="[in_Status]" />
+                  <excel:WriteCell
+                      DisplayName="WRITE | H = ErrorType"
+                      SheetName="[in_SheetName]"
+                      Cell="[&quot;H&quot; &amp; str_ExcelRow]"
+                      Value="[in_ErrorType]" />
+                  <excel:WriteCell
+                      DisplayName="WRITE | I = ErrorMessage"
+                      SheetName="[in_SheetName]"
+                      Cell="[&quot;I&quot; &amp; str_ExcelRow]"
+                      Value="[in_ErrorMessage]" />
+                  <excel:WriteCell
+                      DisplayName="WRITE | J = ProcessedTimestamp"
+                      SheetName="[in_SheetName]"
+                      Cell="[&quot;J&quot; &amp; str_ExcelRow]"
+                      Value="[in_Timestamp]" />
+                </Sequence>
+              </ActivityAction>
+            </excel:UseExcelFile.Body>
+          </excel:UseExcelFile>
+
+          <!-- ── 3. Re-upload updated Excel back to bucket ──────────────── -->
+          <!--
+            STUDIO WEB CHANGE:
+              ADDED: Re-upload the modified temp file to Storage Bucket.
+              This overwrites the existing blob, completing the "save to cloud".
+          -->
+          <storage:UploadStorageBucketFile
+              DisplayName="BUCKET | Re-upload Updated Output Excel"
+              BucketName="[in_BucketName]"
+              FilePath="[str_TempExcelPath]"
+              FileName="[in_OutputExcelBlobKey]" />
+
+          <ui:LogMessage Level="Info"
+                         Message="[&quot;[UPDATE EXCEL] Row &quot; &amp; str_ExcelRow &amp; &quot; updated and re-uploaded → Status=&quot; &amp; in_Status]" />
+        </Sequence>
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <!-- SE06: Download, write, or re-upload failure -->
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Write" />
+            </ActivityAction.Argument>
+            <Sequence>
+              <ui:LogMessage Level="Error"
+                             Message="[&quot;[SE06][ExcelWriteFailure] Cannot update/re-upload Output Excel row &quot; &amp; str_ExcelRow &amp; &quot;: &quot; &amp; ex_Write.Message]" />
+              <Throw DisplayName="RETHROW | SE06 Excel Write Failure">
+                <Throw.Exception>
+                  <InArgument x:TypeArguments="s:Exception">
+                    [New System.IO.IOException("[SE06][ExcelWriteFailure] " &amp; ex_Write.Message)]
+                  </InArgument>
+                </Throw.Exception>
+              </Throw>
+            </Sequence>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+      <TryCatch.Finally>
+        <!-- Always clean up temp file, even on failure -->
+        <TryCatch DisplayName="FINALLY | Cleanup Temp Excel">
+          <TryCatch.Try>
+            <If DisplayName="IF | Temp file exists?">
+              <If.Condition>
+                <InArgument x:TypeArguments="x:Boolean">[System.IO.File.Exists(str_TempExcelPath)]</InArgument>
+              </If.Condition>
+              <If.Then>
+                <InvokeMethod MethodName="Delete" ClassName="System.IO.File">
+                  <InvokeMethod.Parameters>
+                    <InArgument x:TypeArguments="x:String">[str_TempExcelPath]</InArgument>
+                  </InvokeMethod.Parameters>
+                </InvokeMethod>
+              </If.Then>
+            </If>
+          </TryCatch.Try>
+          <TryCatch.Catches>
+            <Catch x:TypeArguments="s:Exception">
+              <ActivityAction x:TypeArguments="s:Exception">
+                <ActivityAction.Argument><DelegateInArgument x:TypeArguments="s:Exception" Name="ex_T" /></ActivityAction.Argument>
+                <ui:LogMessage Level="Trace" Message="[&quot;[UPDATE EXCEL] Temp cleanup: &quot; &amp; ex_T.Message]" />
+              </ActivityAction>
+            </Catch>
+          </TryCatch.Catches>
+        </TryCatch>
+      </TryCatch.Finally>
+    </TryCatch>
+
+  </Sequence>
+</Activity>

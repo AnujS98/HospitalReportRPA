@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  PERFORMER: Process.xaml  —  STUDIO WEB / CROSS-PLATFORM                ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  Changes from Desktop version:                                           ║
+  ║  ► ReportFilePath in queue now holds the Storage Bucket blob KEY         ║
+  ║    (not a local disk path like C:\Reports\...)                           ║
+  ║  ► Passes BucketName + BlobKey to RenameAndMoveFile instead of filepath  ║
+  ║  ► out_FinalBlobKey returned (not a file path) for Excel/Email updates   ║
+  ║  ► Log appended to Orchestrator log (no local log file write)           ║
+  ║    Use ui:LogMessage Level=Info/Warn/Error — Orchestrator captures these ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Performer.Process"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_TransactionItem" Type="InArgument(ui:QueueItem)" />
+    <x:Property Name="in_Config"          Type="InArgument(scg:Dictionary(x:String, x:String))" />
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: in_LogFilePath  (no local log file — Orchestrator captures LogMessage activities)
+    -->
+  </x:Members>
+
+  <Sequence DisplayName="[PROCESS] Single Transaction — Web Edition">
+    <Sequence.Variables>
+      <!-- Queue item fields — same as desktop -->
+      <Variable x:TypeArguments="x:String" Name="str_UHID" />
+      <Variable x:TypeArguments="x:String" Name="str_PatientName" />
+      <Variable x:TypeArguments="x:String" Name="str_TestType" />
+      <!--
+        STUDIO WEB CHANGE:
+          str_SourceBlobKey replaces str_SourceFilePath
+          The queue item's "ReportFilePath" now carries a Storage Bucket blob key
+          e.g. "input-pdfs/original_lab_report.pdf"
+          NOT a local path like "C:\Reports\original_lab_report.pdf"
+      -->
+      <Variable x:TypeArguments="x:String" Name="str_SourceBlobKey" />
+      <Variable x:TypeArguments="x:String" Name="str_Email" />
+      <Variable x:TypeArguments="x:String" Name="str_RowIndex" />
+      <!-- Derived -->
+      <Variable x:TypeArguments="x:String" Name="str_FinalBlobKey" />
+      <Variable x:TypeArguments="x:String" Name="str_ProcessDate"
+                Default="[DateTime.Now.ToString(&quot;yyyyMMdd&quot;)]" />
+      <Variable x:TypeArguments="x:String" Name="str_ProcessTimestamp"
+                Default="[DateTime.Now.ToString(&quot;yyyy-MM-dd HH:mm:ss&quot;)]" />
+    </Sequence.Variables>
+
+    <!-- ── STEP 1: Extract Queue Item Fields ─────────────────────────────── -->
+    <Sequence DisplayName="EXTRACT | Queue Item Fields">
+      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_UHID]</OutArgument></Assign.To>
+        <Assign.Value><InArgument x:TypeArguments="x:String">[in_TransactionItem.SpecificContent("UHID").ToString]</InArgument></Assign.Value></Assign>
+      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_PatientName]</OutArgument></Assign.To>
+        <Assign.Value><InArgument x:TypeArguments="x:String">[in_TransactionItem.SpecificContent("PatientName").ToString]</InArgument></Assign.Value></Assign>
+      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_TestType]</OutArgument></Assign.To>
+        <Assign.Value><InArgument x:TypeArguments="x:String">[in_TransactionItem.SpecificContent("TestType").ToString]</InArgument></Assign.Value></Assign>
+      <!--
+        STUDIO WEB: Field name "ReportFilePath" now carries the Bucket blob KEY
+        Dispatcher puts a bucket key like "input-pdfs/lab_rk.pdf" into this field
+      -->
+      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_SourceBlobKey]</OutArgument></Assign.To>
+        <Assign.Value><InArgument x:TypeArguments="x:String">[in_TransactionItem.SpecificContent("ReportFilePath").ToString]</InArgument></Assign.Value></Assign>
+      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_Email]</OutArgument></Assign.To>
+        <Assign.Value><InArgument x:TypeArguments="x:String">[in_TransactionItem.SpecificContent("RecipientEmail").ToString]</InArgument></Assign.Value></Assign>
+      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_RowIndex]</OutArgument></Assign.To>
+        <Assign.Value><InArgument x:TypeArguments="x:String">[in_TransactionItem.SpecificContent("RowIndex").ToString]</InArgument></Assign.Value></Assign>
+
+      <ui:LogMessage Level="Info"
+                     Message="[&quot;[PROCESS] UHID=&quot; &amp; str_UHID &amp; &quot; | Test=&quot; &amp; str_TestType &amp; &quot; | BlobKey=&quot; &amp; str_SourceBlobKey]" />
+    </Sequence>
+
+    <!-- ── STEP 2: Rename and Move (via Storage Bucket) ──────────────────── -->
+    <ui:InvokeWorkflowFile
+        WorkflowFileName="[&quot;Performer\\RenameAndMoveFile.xaml&quot;]"
+        DisplayName="INVOKE | RenameAndMoveFile (Bucket)">
+      <ui:InvokeWorkflowFile.Arguments>
+        <InArgument  x:TypeArguments="x:String" x:Key="in_BucketName">[in_Config("BucketName")]</InArgument>
+        <InArgument  x:TypeArguments="x:String" x:Key="in_SourceBlobKey">[str_SourceBlobKey]</InArgument>
+        <InArgument  x:TypeArguments="x:String" x:Key="in_UHID">[str_UHID]</InArgument>
+        <InArgument  x:TypeArguments="x:String" x:Key="in_TestType">[str_TestType]</InArgument>
+        <InArgument  x:TypeArguments="x:String" x:Key="in_ProcessDate">[str_ProcessDate]</InArgument>
+        <InArgument  x:TypeArguments="x:String" x:Key="in_OutputBlobFolder">[in_Config("OutputPDFFolder")]</InArgument>
+        <OutArgument x:TypeArguments="x:String" x:Key="out_FinalBlobKey">[str_FinalBlobKey]</OutArgument>
+      </ui:InvokeWorkflowFile.Arguments>
+    </ui:InvokeWorkflowFile>
+
+    <ui:LogMessage Level="Info"
+                   Message="[&quot;[PROCESS] File renamed in bucket → &quot; &amp; str_FinalBlobKey]" />
+
+    <!-- ── STEP 3: Send Email (Microsoft 365) ────────────────────────────── -->
+    <ui:InvokeWorkflowFile
+        WorkflowFileName="[&quot;Performer\\SendNotification.xaml&quot;]"
+        DisplayName="INVOKE | SendNotification (M365)">
+      <ui:InvokeWorkflowFile.Arguments>
+        <InArgument x:TypeArguments="x:String" x:Key="in_RecipientEmail">[str_Email]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_PatientName">[str_PatientName]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_UHID">[str_UHID]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_TestType">[str_TestType]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_FinalBlobKey">[str_FinalBlobKey]</InArgument>
+        <InArgument x:TypeArguments="scg:Dictionary(x:String, x:String)" x:Key="in_Config">[in_Config]</InArgument>
+      </ui:InvokeWorkflowFile.Arguments>
+    </ui:InvokeWorkflowFile>
+
+    <!-- ── STEP 4: Update Output Excel in Storage Bucket ─────────────────── -->
+    <ui:InvokeWorkflowFile
+        WorkflowFileName="[&quot;Performer\\UpdateExcelStatus.xaml&quot;]"
+        DisplayName="INVOKE | UpdateExcelStatus (Bucket)">
+      <ui:InvokeWorkflowFile.Arguments>
+        <InArgument x:TypeArguments="x:String" x:Key="in_BucketName">[in_Config("BucketName")]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_OutputExcelBlobKey">[in_Config("OutputExcelBlobKey")]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_RowIndex">[str_RowIndex]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_Status">["Success"]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_RenamedBlobKey">[str_FinalBlobKey]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_ErrorType">[""]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_ErrorMessage">[""]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_Timestamp">[str_ProcessTimestamp]</InArgument>
+        <InArgument x:TypeArguments="x:String" x:Key="in_SheetName">[in_Config("SheetName")]</InArgument>
+      </ui:InvokeWorkflowFile.Arguments>
+    </ui:InvokeWorkflowFile>
+
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: System.IO.File.AppendAllText(str_LogFilePath, ...) — no local log file
+        ADDED  : ui:LogMessage — Orchestrator captures all LogMessage output centrally
+                 in the Orchestrator Logs view and Monitoring dashboards.
+    -->
+    <ui:LogMessage Level="Info"
+                   Message="[&quot;[PROCESS] ✓ COMPLETE — UHID=&quot; &amp; str_UHID &amp; &quot; | Test=&quot; &amp; str_TestType &amp; &quot; | Blob=&quot; &amp; str_FinalBlobKey &amp; &quot; | Time=&quot; &amp; str_ProcessTimestamp]" />
+
+  </Sequence>
+</Activity>

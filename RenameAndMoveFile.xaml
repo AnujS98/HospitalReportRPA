@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  PERFORMER: RenameAndMoveFile.xaml  —  STUDIO WEB / CROSS-PLATFORM      ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  This is the MOST CHANGED workflow vs desktop version.                   ║
+  ║                                                                          ║
+  ║  Desktop: System.IO.File.Copy + System.IO.File.Delete (local disk)      ║
+  ║  Web    : Download → local temp → Upload with new name → Delete original ║
+  ║                                                                          ║
+  ║  Storage Bucket operations replace all local file system calls:          ║
+  ║  ► DownloadStorageBucketFile  (get the original PDF)                     ║
+  ║  ► UploadStorageBucketFile    (push renamed PDF to output folder)        ║
+  ║  ► DeleteStorageBucketFile    (remove the original blob)                 ║
+  ║  ► ListStorageBucketFiles     (collision check)                          ║
+  ║                                                                          ║
+  ║  IN Args : in_BucketName, in_SourceBlobKey (input bucket key of PDF)    ║
+  ║            in_UHID, in_TestType, in_ProcessDate, in_OutputBlobFolder    ║
+  ║  OUT Args: out_FinalBlobKey (key of renamed blob in output folder)       ║
+  ║  Throws  : BR04, BR07 (BusinessRuleException), SE03/SE04 (SysEx)        ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Performer.RenameAndMoveFile"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:storage="clr-namespace:UiPath.Orchestrator.Activities;assembly=UiPath.Orchestrator.Activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_BucketName"       Type="InArgument(x:String)" />
+    <x:Property Name="in_SourceBlobKey"    Type="InArgument(x:String)" />
+    <x:Property Name="in_UHID"             Type="InArgument(x:String)" />
+    <x:Property Name="in_TestType"         Type="InArgument(x:String)" />
+    <x:Property Name="in_ProcessDate"      Type="InArgument(x:String)" />
+    <x:Property Name="in_OutputBlobFolder" Type="InArgument(x:String)" />
+    <x:Property Name="out_FinalBlobKey"    Type="OutArgument(x:String)" />
+  </x:Members>
+
+  <Sequence DisplayName="[RENAME &amp; MOVE] PDF via Storage Bucket — Web Edition">
+    <Sequence.Variables>
+      <!--
+        str_BaseFileName  : e.g. "UHID001234_Lab_20240315"
+        str_TargetBlobKey : e.g. "output/UHID001234_Lab_20240315.pdf"
+        str_TempLocalPath : temp location for the downloaded PDF
+        lst_ExistingBlobs : result of ListStorageBucketFiles (for collision check)
+        int_Collision     : counter to resolve naming collisions
+        bool_Uploaded     : flag once upload is confirmed
+      -->
+      <Variable x:TypeArguments="x:String"            Name="str_BaseFileName" />
+      <Variable x:TypeArguments="x:String"            Name="str_TargetBlobKey" />
+      <Variable x:TypeArguments="x:String"            Name="str_TempLocalPath"
+                Default="[System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString(&quot;N&quot;) &amp; &quot;.pdf&quot;)]" />
+      <Variable x:TypeArguments="scg:IEnumerable(x:String)" Name="lst_ExistingBlobs" />
+      <Variable x:TypeArguments="x:Int32"             Name="int_Collision"   Default="0" />
+      <Variable x:TypeArguments="x:Boolean"           Name="bool_Uploaded"   Default="False" />
+    </Sequence.Variables>
+
+    <!-- ── STEP 1: Verify source blob exists in bucket ───────────────────── -->
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: System.IO.File.Exists(str_SourcePath) — no local path
+        ADDED  : ListStorageBucketFiles filtered by prefix → check if source key present
+    -->
+    <TryCatch DisplayName="TRY | Verify Source Blob Exists (BR04 runtime check)">
+      <TryCatch.Try>
+        <storage:ListStorageBucketFiles
+            DisplayName="BUCKET | List Files (verify source)"
+            BucketName="[in_BucketName]"
+            Prefix="[in_SourceBlobKey]"
+            Files="[lst_ExistingBlobs]" />
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_List" />
+            </ActivityAction.Argument>
+            <Throw DisplayName="THROW | SE04 Bucket Unreachable (Source Check)">
+              <Throw.Exception>
+                <InArgument x:TypeArguments="s:Exception">
+                  [New System.IO.IOException("[SE04][NetworkDriveUnavailable] Cannot list bucket files: " &amp; ex_List.Message)]
+                </InArgument>
+              </Throw.Exception>
+            </Throw>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- BR04: Source blob not found at runtime -->
+    <If DisplayName="IF | Source blob confirmed in bucket?">
+      <If.Condition>
+        <InArgument x:TypeArguments="x:Boolean">
+          [lst_ExistingBlobs Is Nothing OrElse Not lst_ExistingBlobs.Any(Function(k) k = in_SourceBlobKey)]
+        </InArgument>
+      </If.Condition>
+      <If.Then>
+        <Throw DisplayName="THROW | BR04 Source Blob Not Found">
+          <Throw.Exception>
+            <InArgument x:TypeArguments="ui:BusinessRuleException">
+              [New UiPath.Core.Activities.BusinessRuleException("[BR04][ReportFileNotFound] Source PDF not found in bucket at runtime. Key='" &amp; in_SourceBlobKey &amp; "'")]
+            </InArgument>
+          </Throw.Exception>
+        </Throw>
+      </If.Then>
+    </If>
+
+    <!-- ── STEP 2: Build target blob name ───────────────────────────────── -->
+    <Assign DisplayName="BUILD | Base File Name">
+      <Assign.To><OutArgument x:TypeArguments="x:String">[str_BaseFileName]</OutArgument></Assign.To>
+      <Assign.Value>
+        <InArgument x:TypeArguments="x:String">
+          [in_UHID &amp; "_" &amp; in_TestType &amp; "_" &amp; in_ProcessDate]
+        </InArgument>
+      </Assign.Value>
+    </Assign>
+    <Assign DisplayName="BUILD | Initial Target Blob Key">
+      <Assign.To><OutArgument x:TypeArguments="x:String">[str_TargetBlobKey]</OutArgument></Assign.To>
+      <Assign.Value>
+        <InArgument x:TypeArguments="x:String">
+          [in_OutputBlobFolder.TrimEnd("/"c) &amp; "/" &amp; str_BaseFileName &amp; ".pdf"]
+        </InArgument>
+      </Assign.Value>
+    </Assign>
+
+    <!-- ── STEP 3: Collision check against output folder in bucket ───────── -->
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: System.IO.File.Exists(str_FinalPath) loop on local disk
+        ADDED  : ListStorageBucketFiles on output folder → check if target key exists
+    -->
+    <storage:ListStorageBucketFiles
+        DisplayName="BUCKET | List Output Folder (collision check)"
+        BucketName="[in_BucketName]"
+        Prefix="[in_OutputBlobFolder]"
+        Files="[lst_ExistingBlobs]" />
+
+    <While DisplayName="WHILE | Resolve Blob Name Collision">
+      <While.Condition>
+        <InArgument x:TypeArguments="x:Boolean">
+          [lst_ExistingBlobs IsNot Nothing AndAlso lst_ExistingBlobs.Any(Function(k) k = str_TargetBlobKey)]
+        </InArgument>
+      </While.Condition>
+      <Sequence>
+        <Assign>
+          <Assign.To><OutArgument x:TypeArguments="x:Int32">[int_Collision]</OutArgument></Assign.To>
+          <Assign.Value><InArgument x:TypeArguments="x:Int32">[int_Collision + 1]</InArgument></Assign.Value>
+        </Assign>
+        <Assign DisplayName="RESOLVE | Append Counter to Blob Key">
+          <Assign.To><OutArgument x:TypeArguments="x:String">[str_TargetBlobKey]</OutArgument></Assign.To>
+          <Assign.Value>
+            <InArgument x:TypeArguments="x:String">
+              [in_OutputBlobFolder.TrimEnd("/"c) &amp; "/" &amp; str_BaseFileName &amp; "_" &amp; int_Collision.ToString &amp; ".pdf"]
+            </InArgument>
+          </Assign.Value>
+        </Assign>
+        <ui:LogMessage Level="Warn"
+                       Message="[&quot;[BR07][FileCollision] Blob name conflict. Trying: &quot; &amp; str_TargetBlobKey]" />
+      </Sequence>
+    </While>
+
+    <!-- ── STEP 4: Download source PDF to local temp ─────────────────────── -->
+    <!--
+      STUDIO WEB: Must download to temp before re-uploading with new name.
+      Storage Buckets do not support server-side rename/copy.
+    -->
+    <TryCatch DisplayName="TRY | Download Source PDF to Temp">
+      <TryCatch.Try>
+        <storage:DownloadStorageBucketFile
+            DisplayName="BUCKET | Download Source PDF"
+            BucketName="[in_BucketName]"
+            FileName="[in_SourceBlobKey]"
+            FilePath="[str_TempLocalPath]" />
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Dl" />
+            </ActivityAction.Argument>
+            <Throw DisplayName="RETHROW | SE03 Download Failed">
+              <Throw.Exception>
+                <InArgument x:TypeArguments="s:Exception">
+                  [New System.IO.IOException("[SE03][FileSystemAccessDenied] Cannot download source PDF: " &amp; ex_Dl.Message)]
+                </InArgument>
+              </Throw.Exception>
+            </Throw>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- ── STEP 5: Upload with new blob key (renamed) ───────────────────── -->
+    <!--
+      STUDIO WEB:
+        REMOVED: System.IO.File.Copy (local copy)
+        ADDED  : UploadStorageBucketFile with new target key name
+      This is the "rename" — the blob key IS the filename in bucket storage.
+    -->
+    <TryCatch DisplayName="TRY | Upload PDF with Renamed Blob Key">
+      <TryCatch.Try>
+        <storage:UploadStorageBucketFile
+            DisplayName="BUCKET | Upload Renamed PDF"
+            BucketName="[in_BucketName]"
+            FilePath="[str_TempLocalPath]"
+            FileName="[str_TargetBlobKey]" />
+
+        <Assign>
+          <Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_Uploaded]</OutArgument></Assign.To>
+          <Assign.Value><InArgument x:TypeArguments="x:Boolean">[True]</InArgument></Assign.Value>
+        </Assign>
+        <ui:LogMessage Level="Info"
+                       Message="[&quot;[RENAME &amp; MOVE] ✓ Uploaded: &quot; &amp; str_TargetBlobKey]" />
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument>
+              <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Up" />
+            </ActivityAction.Argument>
+            <Throw DisplayName="RETHROW | SE04 Upload Failed">
+              <Throw.Exception>
+                <InArgument x:TypeArguments="s:Exception">
+                  [New System.IO.IOException("[SE04][NetworkDriveUnavailable] Upload to bucket failed: " &amp; ex_Up.Message)]
+                </InArgument>
+              </Throw.Exception>
+            </Throw>
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- ── STEP 6: Delete original blob (only after upload confirmed) ───── -->
+    <!--
+      STUDIO WEB CHANGE:
+        REMOVED: System.IO.File.Delete(in_SourcePath)
+        ADDED  : DeleteStorageBucketFile — only called when bool_Uploaded = True
+      This mirrors the desktop copy-then-delete pattern for atomicity.
+    -->
+    <If DisplayName="IF | Upload succeeded → Delete original blob">
+      <If.Condition>
+        <InArgument x:TypeArguments="x:Boolean">[bool_Uploaded]</InArgument>
+      </If.Condition>
+      <If.Then>
+        <TryCatch DisplayName="TRY | Delete Original Blob">
+          <TryCatch.Try>
+            <storage:DeleteStorageBucketFile
+                DisplayName="BUCKET | Delete Source Blob"
+                BucketName="[in_BucketName]"
+                FileName="[in_SourceBlobKey]" />
+            <ui:LogMessage Level="Info"
+                           Message="[&quot;[RENAME &amp; MOVE] ✓ Original blob deleted: &quot; &amp; in_SourceBlobKey]" />
+          </TryCatch.Try>
+          <TryCatch.Catches>
+            <Catch x:TypeArguments="s:Exception">
+              <ActivityAction x:TypeArguments="s:Exception">
+                <ActivityAction.Argument>
+                  <DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Del" />
+                </ActivityAction.Argument>
+                <!--
+                  Non-fatal: upload succeeded so renamed file is safe.
+                  Log warning; original will be cleaned up in next run or manually.
+                -->
+                <ui:LogMessage Level="Warn"
+                               Message="[&quot;[RENAME &amp; MOVE] WARNING: Could not delete original blob (uploaded OK). Manual cleanup needed for: &quot; &amp; in_SourceBlobKey &amp; &quot;. Error: &quot; &amp; ex_Del.Message]" />
+              </ActivityAction>
+            </Catch>
+          </TryCatch.Catches>
+        </TryCatch>
+      </If.Then>
+    </If>
+
+    <!-- ── STEP 7: Cleanup temp file ────────────────────────────────────── -->
+    <TryCatch DisplayName="TRY | Delete Local Temp PDF">
+      <TryCatch.Try>
+        <InvokeMethod MethodName="Delete" ClassName="System.IO.File">
+          <InvokeMethod.Parameters>
+            <InArgument x:TypeArguments="x:String">[str_TempLocalPath]</InArgument>
+          </InvokeMethod.Parameters>
+        </InvokeMethod>
+      </TryCatch.Try>
+      <TryCatch.Catches>
+        <Catch x:TypeArguments="s:Exception">
+          <ActivityAction x:TypeArguments="s:Exception">
+            <ActivityAction.Argument><DelegateInArgument x:TypeArguments="s:Exception" Name="ex_T" /></ActivityAction.Argument>
+            <ui:LogMessage Level="Trace" Message="[&quot;[RENAME &amp; MOVE] Temp cleanup: &quot; &amp; ex_T.Message]" />
+          </ActivityAction>
+        </Catch>
+      </TryCatch.Catches>
+    </TryCatch>
+
+    <!-- Return the final blob key -->
+    <Assign DisplayName="RETURN | Final Blob Key">
+      <Assign.To><OutArgument x:TypeArguments="x:String">[out_FinalBlobKey]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="x:String">[str_TargetBlobKey]</InArgument></Assign.Value>
+    </Assign>
+
+    <ui:LogMessage Level="Info"
+                   Message="[&quot;[RENAME &amp; MOVE] Complete → BlobKey=&quot; &amp; str_TargetBlobKey]" />
+
+  </Sequence>
+</Activity>

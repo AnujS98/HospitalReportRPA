@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Activity
+  mc:Ignorable="sap sap2010"
+  x:Class="HospitalReportRPA_Web.Dispatcher.ValidateAndAddQueue"
+  xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:s="clr-namespace:System;assembly=mscorlib"
+  xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation"
+  xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation"
+  xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Collections"
+  xmlns:sd="clr-namespace:System.Data;assembly=System.Data"
+  xmlns:ui="http://schemas.uipath.com/workflow/activities"
+  xmlns:storage="clr-namespace:UiPath.Orchestrator.Activities;assembly=UiPath.Orchestrator.Activities"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <x:Members>
+    <x:Property Name="in_dtPatients"    Type="InArgument(sd:DataTable)" />
+    <x:Property Name="in_Config"        Type="InArgument(scg:Dictionary(x:String, x:String))" />
+    <x:Property Name="out_SuccessCount" Type="OutArgument(x:Int32)" />
+    <x:Property Name="out_FailedCount"  Type="OutArgument(x:Int32)" />
+  </x:Members>
+
+  <Sequence DisplayName="[DISPATCHER] Validate and Add to Queue — Web Edition">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="x:Int32"  Name="int_SuccessCount"   Default="0" />
+      <Variable x:TypeArguments="x:Int32"  Name="int_FailedCount"    Default="0" />
+      <Variable x:TypeArguments="x:Int32"  Name="int_RowIndex"       Default="1" />
+      <Variable x:TypeArguments="x:String" Name="str_UHID" />
+      <Variable x:TypeArguments="x:String" Name="str_PatientName" />
+      <Variable x:TypeArguments="x:String" Name="str_TestType" />
+      <!--
+        STUDIO WEB: str_BlobKey holds a Storage Bucket blob key (e.g. "input-pdfs/lab_rk.pdf")
+        NOT a local disk path. The Excel column "ReportFilePath" must contain bucket keys.
+      -->
+      <Variable x:TypeArguments="x:String" Name="str_BlobKey" />
+      <Variable x:TypeArguments="x:String" Name="str_Email" />
+      <Variable x:TypeArguments="x:String" Name="str_ValidationError" />
+      <Variable x:TypeArguments="x:Boolean" Name="bool_IsValid" />
+      <Variable x:TypeArguments="scg:List(x:String)" Name="lst_AllowedTestTypes" />
+      <Variable x:TypeArguments="scg:List(x:String)" Name="lst_SeenUHIDs" />
+      <Variable x:TypeArguments="scg:Dictionary(x:String, x:Object)" Name="dict_QueueItem" />
+      <Variable x:TypeArguments="scg:IEnumerable(x:String)" Name="lst_BucketFiles" />
+    </Sequence.Variables>
+
+    <!-- Init lists -->
+    <Assign DisplayName="INIT | AllowedTestTypes">
+      <Assign.To><OutArgument x:TypeArguments="scg:List(x:String)">[lst_AllowedTestTypes]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="scg:List(x:String)">[New List(Of String)(in_Config("AllowedTestTypes").Split(","c))]</InArgument></Assign.Value>
+    </Assign>
+    <Assign DisplayName="INIT | SeenUHIDs">
+      <Assign.To><OutArgument x:TypeArguments="scg:List(x:String)">[lst_SeenUHIDs]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="scg:List(x:String)">[New List(Of String)()]</InArgument></Assign.Value>
+    </Assign>
+
+    <!-- FOR EACH ROW -->
+    <ForEach x:TypeArguments="sd:DataRow" DisplayName="FOR EACH | Patient Row">
+      <ForEach.Values>
+        <InArgument x:TypeArguments="scg:IEnumerable(sd:DataRow)">[in_dtPatients.AsEnumerable()]</InArgument>
+      </ForEach.Values>
+      <ActivityAction x:TypeArguments="sd:DataRow">
+        <ActivityAction.Argument>
+          <DelegateInArgument x:TypeArguments="sd:DataRow" Name="row" />
+        </ActivityAction.Argument>
+        <Sequence DisplayName="PROCESS | Single Row">
+
+          <!-- Extract fields -->
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_UHID]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:String">[row("UHID").ToString.Trim]</InArgument></Assign.Value></Assign>
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_PatientName]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:String">[row("PatientName").ToString.Trim]</InArgument></Assign.Value></Assign>
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_TestType]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:String">[row("TestType").ToString.Trim]</InArgument></Assign.Value></Assign>
+          <!-- ReportFilePath column now holds a bucket blob key -->
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_BlobKey]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:String">[row("ReportFilePath").ToString.Trim]</InArgument></Assign.Value></Assign>
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_Email]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:String">[If(row.Table.Columns.Contains("RecipientEmail"), row("RecipientEmail").ToString.Trim, "")]</InArgument></Assign.Value></Assign>
+
+          <!-- Reset -->
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:Boolean">[True]</InArgument></Assign.Value></Assign>
+          <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:String">[""]</InArgument></Assign.Value></Assign>
+
+          <!-- BR02: PatientName -->
+          <If DisplayName="[BR02] PatientName empty?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[String.IsNullOrWhiteSpace(str_PatientName)]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">["[BR02] MissingPatientName"]</InArgument></Assign.Value></Assign>
+              </Sequence>
+            </If.Then>
+          </If>
+
+          <!-- BR01: UHID format -->
+          <If DisplayName="[BR01] UHID format valid?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_IsValid AndAlso (String.IsNullOrWhiteSpace(str_UHID) OrElse Not System.Text.RegularExpressions.Regex.IsMatch(str_UHID, "^[A-Za-z0-9]{6,12}$"))]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">["[BR01] InvalidUHIDFormat: " &amp; str_UHID]</InArgument></Assign.Value></Assign>
+              </Sequence>
+            </If.Then>
+          </If>
+
+          <!-- BR03: TestType -->
+          <If DisplayName="[BR03] TestType allowed?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_IsValid AndAlso Not lst_AllowedTestTypes.Contains(str_TestType, StringComparer.OrdinalIgnoreCase)]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">["[BR03] InvalidTestType: " &amp; str_TestType]</InArgument></Assign.Value></Assign>
+              </Sequence>
+            </If.Then>
+          </If>
+
+          <!-- BR06: Extension .pdf -->
+          <If DisplayName="[BR06] Blob key ends with .pdf?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_IsValid AndAlso Not str_BlobKey.ToLower.EndsWith(".pdf")]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">["[BR06] InvalidFileExtension: blob key must end in .pdf"]</InArgument></Assign.Value></Assign>
+              </Sequence>
+            </If.Then>
+          </If>
+
+          <!--
+            BR04: Verify blob actually exists in Storage Bucket
+            STUDIO WEB CHANGE: System.IO.File.Exists → ListStorageBucketFiles
+          -->
+          <If DisplayName="[BR04] Check blob exists in bucket?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_IsValid]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <TryCatch DisplayName="TRY | ListBucketFiles for BR04">
+                  <TryCatch.Try>
+                    <storage:ListStorageBucketFiles
+                        DisplayName="BUCKET | List (BR04 check)"
+                        BucketName="[in_Config(&quot;BucketName&quot;)]"
+                        Prefix="[str_BlobKey]"
+                        Files="[lst_BucketFiles]" />
+                  </TryCatch.Try>
+                  <TryCatch.Catches>
+                    <Catch x:TypeArguments="s:Exception">
+                      <ActivityAction x:TypeArguments="s:Exception">
+                        <ActivityAction.Argument><DelegateInArgument x:TypeArguments="s:Exception" Name="ex_L" /></ActivityAction.Argument>
+                        <ui:LogMessage Level="Warn" Message="[&quot;[BR04] Bucket list error for &quot; &amp; str_BlobKey &amp; &quot;: &quot; &amp; ex_L.Message]" />
+                      </ActivityAction>
+                    </Catch>
+                  </TryCatch.Catches>
+                </TryCatch>
+                <If DisplayName="[BR04] Blob key found?">
+                  <If.Condition>
+                    <InArgument x:TypeArguments="x:Boolean">
+                      [lst_BucketFiles Is Nothing OrElse Not lst_BucketFiles.Any(Function(k) k = str_BlobKey)]
+                    </InArgument>
+                  </If.Condition>
+                  <If.Then>
+                    <Sequence>
+                      <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                      <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">["[BR04] ReportFileNotFound in bucket: " &amp; str_BlobKey]</InArgument></Assign.Value></Assign>
+                    </Sequence>
+                  </If.Then>
+                </If>
+              </Sequence>
+            </If.Then>
+          </If>
+
+          <!-- BR05: Duplicate -->
+          <If DisplayName="[BR05] Duplicate UHID+Test in run?">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_IsValid AndAlso lst_SeenUHIDs.Contains(str_UHID &amp; "_" &amp; str_TestType)]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Boolean">[bool_IsValid]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Boolean">[False]</InArgument></Assign.Value></Assign>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:String">[str_ValidationError]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:String">["[BR05] DuplicateQueueItem: " &amp; str_UHID &amp; "_" &amp; str_TestType]</InArgument></Assign.Value></Assign>
+              </Sequence>
+            </If.Then>
+          </If>
+
+          <!-- DECISION -->
+          <If DisplayName="IF | Valid → AddQueueItem">
+            <If.Condition><InArgument x:TypeArguments="x:Boolean">[bool_IsValid]</InArgument></If.Condition>
+            <If.Then>
+              <Sequence>
+                <Assign DisplayName="BUILD | Queue Item Payload">
+                  <Assign.To><OutArgument x:TypeArguments="scg:Dictionary(x:String, x:Object)">[dict_QueueItem]</OutArgument></Assign.To>
+                  <Assign.Value>
+                    <InArgument x:TypeArguments="scg:Dictionary(x:String, x:Object)">
+                      [New Dictionary(Of String, Object) From {
+                        {"PatientName",    str_PatientName},
+                        {"UHID",           str_UHID},
+                        {"TestType",       str_TestType},
+                        {"ReportFilePath", str_BlobKey},
+                        {"RecipientEmail", str_Email},
+                        {"RowIndex",       int_RowIndex.ToString},
+                        {"SourceFile",     in_Config("InputExcelBlobKey")},
+                        {"QueuedAt",       DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")}
+                      }]
+                    </InArgument>
+                  </Assign.Value>
+                </Assign>
+                <TryCatch DisplayName="TRY | AddQueueItem">
+                  <TryCatch.Try>
+                    <ui:AddQueueItem
+                        DisplayName="QUEUE | Add Item"
+                        QueueName="[in_Config(&quot;QueueName&quot;)]"
+                        ItemInformation="[dict_QueueItem]"
+                        Priority="Normal" />
+                    <InvokeMethod MethodName="Add" TargetObject="[lst_SeenUHIDs]">
+                      <InvokeMethod.Parameters>
+                        <InArgument x:TypeArguments="x:String">[str_UHID &amp; "_" &amp; str_TestType]</InArgument>
+                      </InvokeMethod.Parameters>
+                    </InvokeMethod>
+                    <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[int_SuccessCount]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_SuccessCount + 1]</InArgument></Assign.Value></Assign>
+                    <ui:LogMessage Level="Info" Message="[&quot;[DISPATCHER] Row &quot; &amp; int_RowIndex.ToString &amp; &quot; QUEUED — &quot; &amp; str_UHID]" />
+                  </TryCatch.Try>
+                  <TryCatch.Catches>
+                    <Catch x:TypeArguments="s:Exception">
+                      <ActivityAction x:TypeArguments="s:Exception">
+                        <ActivityAction.Argument><DelegateInArgument x:TypeArguments="s:Exception" Name="ex_Q" /></ActivityAction.Argument>
+                        <Sequence>
+                          <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[int_FailedCount]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_FailedCount + 1]</InArgument></Assign.Value></Assign>
+                          <ui:LogMessage Level="Error" Message="[&quot;[SE02] Queue error row &quot; &amp; int_RowIndex.ToString &amp; &quot;: &quot; &amp; ex_Q.Message]" />
+                        </Sequence>
+                      </ActivityAction>
+                    </Catch>
+                  </TryCatch.Catches>
+                </TryCatch>
+              </Sequence>
+            </If.Then>
+            <If.Else>
+              <Sequence>
+                <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[int_FailedCount]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_FailedCount + 1]</InArgument></Assign.Value></Assign>
+                <ui:LogMessage Level="Warn" Message="[&quot;[DISPATCHER] Row &quot; &amp; int_RowIndex.ToString &amp; &quot; REJECTED: &quot; &amp; str_ValidationError]" />
+              </Sequence>
+            </If.Else>
+          </If>
+
+          <Assign DisplayName="INCREMENT | RowIndex">
+            <Assign.To><OutArgument x:TypeArguments="x:Int32">[int_RowIndex]</OutArgument></Assign.To>
+            <Assign.Value><InArgument x:TypeArguments="x:Int32">[int_RowIndex + 1]</InArgument></Assign.Value>
+          </Assign>
+
+        </Sequence>
+      </ActivityAction>
+    </ForEach>
+
+    <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[out_SuccessCount]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_SuccessCount]</InArgument></Assign.Value></Assign>
+    <Assign><Assign.To><OutArgument x:TypeArguments="x:Int32">[out_FailedCount]</OutArgument></Assign.To><Assign.Value><InArgument x:TypeArguments="x:Int32">[int_FailedCount]</InArgument></Assign.Value></Assign>
+
+  </Sequence>
+</Activity>
