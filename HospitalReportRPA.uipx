@@ -1,0 +1,15 @@
+{
+  "FormatVersion": "1.0",
+  "SchemaVersion": "1.0.0",
+  "Name": "HospitalReportRPA",
+  "Description": "Hospital Diagnostic Report Automation - Studio Web CrossPlatform Edition",
+  "Version": "2.0.0",
+  "Projects": [
+    {
+      "Name": "HospitalReportRPA_Web",
+      "Path": ".",
+      "Type": "Process",
+      "Version": "2.0.0"
+    }
+  ]
+}
